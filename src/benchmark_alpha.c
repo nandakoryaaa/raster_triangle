@@ -9,9 +9,29 @@ int rnd(int max) {
     return rand() % max;
 }
 
+void draw_alpha_line(
+	SDL_Surface *surf, int x, int y, int w, int color
+) {
+	unsigned char *pixels = (unsigned char *) surf->pixels;
+	int	alpha = color & 255;
+	int alpha1 = 255 - alpha;
+	int	r = ((color >> 24) & 255) * alpha;
+	int	g = ((color >> 16) & 255) * alpha;
+	int	b = ((color >> 8) & 255) * alpha;
+	int addr = y * surf->pitch + x * 4;
+	for (int i = 0; i < w; i++) {
+		int r1 = pixels[addr] * alpha1;
+		int	g1 = pixels[addr + 1] * alpha1;
+		int	b1 = pixels[addr + 2] * alpha1;
+		pixels[addr++] = (r + r1) / 255;
+		pixels[addr++] = (g + g1) / 255;
+		pixels[addr++] = (b + b1) / 255;
+		addr++;
+	}
+}
+
 void draw_triangle(SDL_Surface *surf, int x0, int y0, int x1, int y1, int x2, int y2, int color) {
     int tmp;
-	SDL_Rect rect = {0, 0, 0, 1};
     if (y0 > y1) {
         tmp = y0;
         y0 = y1;
@@ -46,42 +66,32 @@ void draw_triangle(SDL_Surface *surf, int x0, int y0, int x1, int y1, int x2, in
     int dx2 = x2 - x0;
     int dy2 = y2 - y0;
 
-    rect.y = y0;
+    int top_y = y0;
 
-    while(rect.y < y1) {
-        cross_x1 = x0 + dx1 * (rect.y - y0) / dy1;
-        cross_x2 = x0 + dx2 * (rect.y - y0) / dy2;
-
+    while(top_y < y1) {
+        cross_x1 = x0 + dx1 * (top_y - y0) / dy1;
+        cross_x2 = x0 + dx2 * (top_y - y0) / dy2;
         if (cross_x1 > cross_x2) {
-            rect.x = cross_x2;
-			rect.w = cross_x1 - cross_x2;
+            draw_alpha_line(surf, cross_x2, top_y, cross_x1 - cross_x2, color);
         } else {
-            rect.x = cross_x1;
-			rect.w = cross_x2 - cross_x1;
+            draw_alpha_line(surf, cross_x1, top_y, cross_x2 - cross_x1, color);
         }
 
-		SDL_FillRect(surf, &rect, color);
-
-        rect.y++;
+        top_y++;
     }
 
     dx1 = x2 - x1;
     dy1 = y2 - y1;
-    while(rect.y < y2) {
-        cross_x1 = x1 + dx1 * (rect.y - y1) / dy1;
-        cross_x2 = x0 + dx2 * (rect.y - y0) / dy2;
-
+    while(top_y < y2) {
+        cross_x1 = x1 + dx1 * (top_y - y1) / dy1;
+        cross_x2 = x0 + dx2 * (top_y - y0) / dy2;
         if (cross_x1 > cross_x2) {
-            rect.x = cross_x2;
-			rect.w = cross_x1 - cross_x2;
+            draw_alpha_line(surf, cross_x2, top_y, cross_x1 - cross_x2, color);
         } else {
-            rect.x = cross_x1;
-			rect.w = cross_x2 - cross_x1;
+            draw_alpha_line(surf, cross_x1, top_y, cross_x2 - cross_x1, color);
         }
 
-		SDL_FillRect(surf, &rect, color);
-
-        rect.y++;
+        top_y++;
     }
 }
 
@@ -105,17 +115,18 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    int colors[] = {0x0000ff, 0x00ff00, 0x00ffff, 0xff0000, 0xff00ff, 0xffff00, 0xffffff};
+    int colors[] = {0x0000ff30, 0x00ff0030, 0x00ffff30, 0xff000030, 0xff00ff30, 0xffff0030, 0xffffff30};
     int color_num = 0;
 
     SDL_Surface *screenSurface = SDL_GetWindowSurface(window);
+
     srand(time(0));
 
     SDL_Event event;
 
     int ticks = SDL_GetTicks();
     int count = 0;
-
+	SDL_Rect rect = {0, 0, w, h};
     while(1) {
         SDL_PollEvent(&event);
         if (event.type == SDL_QUIT) {
@@ -137,6 +148,7 @@ int main(int argc, char* argv[]) {
 
         draw_triangle(screenSurface, x0, y0, x1, y1, x2, y2, color);
         SDL_UpdateWindowSurface(window);
+
         count++;
 
         if (count > 99999) {
