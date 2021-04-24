@@ -14,7 +14,7 @@ void draw_rect(SDL_Surface *surf, int x, int y, int w, int h, int color) {
     SDL_FillRect(surf, &rect, color);
 }
 
-void draw_triangle(SDL_Surface *surf, int x0, int y0, int x1, int y1, int x2, int y2, int color) {
+void fill_triangle(SDL_Surface *surf, int x0, int y0, int x1, int y1, int x2, int y2, int color) {
     int tmp;
     if (y0 > y1) {
         tmp = y0;
@@ -128,7 +128,7 @@ int main(int argc, char* argv[]) {
                 color_num = 0;
             }
 
-            draw_triangle(screenSurface, x0, y0, x1, y1, x2, y2, color);
+            fill_triangle(screenSurface, x0, y0, x1, y1, x2, y2, color);
             SDL_UpdateWindowSurface(window);
         }        
     }

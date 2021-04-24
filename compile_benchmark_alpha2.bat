@@ -1,1 +1,0 @@
-g++ src/benchmark_alpha2.c -lSDL2main -lSDL2 -o benchmark_alpha2.exe
