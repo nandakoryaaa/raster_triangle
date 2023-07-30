@@ -3,37 +3,60 @@
 #include <SDL2/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
 #include <time.h>
 
-typedef struct RGBA {
-	unsigned char b, g, r, alpha;
-} RGBA;
+#define QUEUE_SIZE 256
 
-typedef struct {
+struct ThreadState {
+	pthread_t thread_id;
+};
+
+struct RGBA {
+	unsigned char b, g, r, alpha;
+};
+
+struct Vertex {
 	int x, y;
 	union {
 		RGBA rgba;
 		unsigned long long value;
 	} pixel;
-} Vertex;
+};
 
-typedef struct {
-	Vertex *v0;
-	Vertex *v1;
-	Vertex *v2;
+struct Triangle {
+	Vertex* v0;
+	Vertex* v1;
+	Vertex* v2;
 	Vertex vertices[3];
-} Triangle;
+};
 
-int rnd(int max) {
+struct Workload {
+	unsigned char* addr;
+	int width;
+	unsigned char start_r;
+	unsigned char start_g;
+	unsigned char start_b;
+	unsigned char start_alpha;
+	unsigned char end_r;
+	unsigned char end_g;
+	unsigned char end_b;
+	unsigned char end_alpha;
+};
+
+static Workload workbuffer[QUEUE_SIZE];
+static volatile int work_head = 0;
+static volatile int work_tail = 0;
+static volatile int working = 1;
+pthread_mutex_t mutex;
+
+int rnd(int max)
+{
 	return rand() % max;
 }
 
-void draw_rect(SDL_Surface *surf, int x, int y, int w, int h, int color) {
-	SDL_Rect rect = {x, y, w, h};
-	SDL_FillRect(surf, &rect, color);
-}
-
-void normalize_triangle(Triangle *t) {
+void normalize_triangle(Triangle *t)
+{
 	t->v0 = &t->vertices[0];
 	t->v1 = &t->vertices[1];
 	t->v2 = &t->vertices[2];
@@ -54,15 +77,73 @@ void normalize_triangle(Triangle *t) {
 	}
 }
 
-void fill_triangle(SDL_Surface *surf, Triangle *t) {
+void* draw_line(void* arg)
+{
+	ThreadState* state = (ThreadState*) arg;
+	printf("thread start: %d\n", state->thread_id);
+	while (1) {
+		pthread_mutex_lock(&mutex);
+		while (work_tail == work_head) {
+			if (!working) {
+				pthread_mutex_unlock(&mutex);
+				printf("thread end: %d\n", state->thread_id);
+				return NULL;
+			}
+			//_sleep(1);
+		}
 
+		Workload w = workbuffer[work_tail];
+
+		if (work_tail + 1 == QUEUE_SIZE) {
+			work_tail = 0;
+		} else {
+			++work_tail;
+		}
+
+		pthread_mutex_unlock(&mutex);
+
+		int range_r = w.end_r - w.start_r;
+		int range_g = w.end_g - w.start_g;
+		int range_b = w.end_b - w.start_b;
+		int range_alpha = w.end_alpha - w.start_alpha;
+
+		for (int i = 0; i < w.width; i++) {
+			unsigned int src_alpha = w.start_alpha + range_alpha * i / w.width;
+
+			int ab = (w.start_b + range_b * i / w.width) * src_alpha;
+			int ag = (w.start_g + range_g * i / w.width) * src_alpha;
+			int ar = (w.start_r + range_r * i / w.width) * src_alpha;
+
+			w.addr[0] = (ab + w.addr[0] * (255 - src_alpha)) / 255;
+			w.addr[1] = (ag + w.addr[1] * (255 - src_alpha)) / 255;
+			w.addr[2] = (ar + w.addr[2] * (255 - src_alpha)) / 255;
+
+			w.addr += 4;
+		}
+	}
+}
+
+void queue(Workload w)
+{
+	int next_head = work_head + 1;
+	if (next_head == QUEUE_SIZE) {
+		next_head = 0;
+	}
+	while (next_head == work_tail) {
+		//_sleep(1);
+	}
+	workbuffer[work_head] = w;
+	work_head = next_head;
+}
+
+void fill_triangle(SDL_Surface *surf, Triangle *t)
+{
 	int cross_x1;
 	int cross_x2;
 	int start_x;
 	int width;
 	int progress_y;
 	unsigned char start_r, start_g, start_b, start_alpha, end_r, end_g, end_b, end_alpha;
-	int range_r, range_g, range_b, range_alpha, ar, ag, ab;
 
 	normalize_triangle(t);
 	Vertex *v0 = t->v0, *v1 = t->v1, *v2 = t->v2;
@@ -87,8 +168,6 @@ void fill_triangle(SDL_Surface *surf, Triangle *t) {
 	unsigned char v2_g = v2->pixel.rgba.g;
 	unsigned char v2_b = v2->pixel.rgba.b;
 	unsigned char v2_alpha = v2->pixel.rgba.alpha;
-
-	unsigned int src_alpha;//, dst_alpha;
 
 	int v0v2_r = v2_r - v0_r;
 	int v0v2_g = v2_g - v0_g;
@@ -134,25 +213,12 @@ void fill_triangle(SDL_Surface *surf, Triangle *t) {
 				end_alpha = v0_alpha + v0v2_alpha * progress_y / dy2;
 			}
 
-			range_r = end_r - start_r;
-			range_g = end_g - start_g;
-			range_b = end_b - start_b;
-			range_alpha = end_alpha - start_alpha; 
-
-			unsigned char *addr = (unsigned char *)surf->pixels + top_y * surf->pitch + start_x * 4;
-			for (int i = 0; i < width; i++) {
-				src_alpha = start_alpha + range_alpha * i / width;
-
-				ab = (start_b + range_b * i / width) * src_alpha;
-				ag = (start_g + range_g * i / width) * src_alpha;
-				ar = (start_r + range_r * i / width) * src_alpha;
-
-				addr[0] = (ab + addr[0] * (255 - src_alpha)) / 255;
-				addr[1] = (ag + addr[1] * (255 - src_alpha)) / 255;
-				addr[2] = (ar + addr[2] * (255 - src_alpha)) / 255;
-
-				addr += 4;
-			}
+			queue({
+				(unsigned char *)surf->pixels + top_y * surf->pitch + start_x * 4,
+				width,
+				start_r, start_g, start_b, start_alpha,
+				end_r, end_g, end_b, end_alpha
+			});
 
 			top_y++;
 		}
@@ -195,32 +261,20 @@ void fill_triangle(SDL_Surface *surf, Triangle *t) {
 				end_alpha = v0_alpha + v0v2_alpha * progress_y / dy2;
 			}
 
-			range_r = end_r - start_r;
-			range_g = end_g - start_g;
-			range_b = end_b - start_b; 
-			range_alpha = end_alpha - start_alpha;
+			queue({
+				(unsigned char *)surf->pixels + top_y * surf->pitch + start_x * 4,
+				width,
+				start_r, start_g, start_b, start_alpha,
+				end_r, end_g, end_b, end_alpha
+			});
 
-			unsigned char *addr = (unsigned char *)surf->pixels + top_y * surf->pitch + start_x * 4;
-			for (int i = 0; i < width; i++) {
-				src_alpha = start_alpha + range_alpha * i / width;
-				//dst_alpha = (255 - src_alpha);
-
-				ab = (start_b + range_b * i / width) * src_alpha;
-				ag = (start_g + range_g * i / width) * src_alpha;
-				ar = (start_r + range_r * i / width) * src_alpha;
-
-				addr[0] = (ab + addr[0] * (255 - src_alpha)) / 255;
-				addr[1] = (ag + addr[1] * (255 - src_alpha)) / 255;
-				addr[2] = (ar + addr[2] * (255 - src_alpha)) / 255;
-
-				addr += 4;
-			}
 			top_y++;
 		}
 	}
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char* argv[])
+{
 	SDL_Init(SDL_INIT_VIDEO);
 
 	int w = 640;
@@ -246,6 +300,18 @@ int main(int argc, char* argv[]) {
 	Triangle tri, tri1, tri2;
 
 	SDL_Event event;
+
+	ThreadState thread_state1;
+	ThreadState thread_state2;
+	ThreadState thread_state3;
+	ThreadState thread_state4;
+
+	pthread_mutex_init(&mutex, NULL);
+
+	pthread_create(&thread_state1.thread_id, NULL, draw_line, &thread_state1);
+	pthread_create(&thread_state2.thread_id, NULL, draw_line, &thread_state2);
+	pthread_create(&thread_state3.thread_id, NULL, draw_line, &thread_state3);
+	pthread_create(&thread_state4.thread_id, NULL, draw_line, &thread_state4);
 
 	if (argc > 1 && !strcmp(argv[1], "bench")) {
 		int ticks = SDL_GetTicks();
@@ -278,10 +344,10 @@ int main(int argc, char* argv[]) {
 			tri2.vertices[2].pixel.value = (rnd(256) << 24) + (rnd(256) << 16) + (rnd(256) << 8) + rnd(256);
 			fill_triangle(screenSurface, &tri1);
 			fill_triangle(screenSurface, &tri2);
+
 			SDL_UpdateWindowSurface(window);
 				
 			count += 2;
-
 			if (count > 9999) {
 				break;
 			}
@@ -291,7 +357,6 @@ int main(int argc, char* argv[]) {
 		printf("%d triangles in %d ms\n", count, ticks);
 	} else {
 		while(1) {
-
 			SDL_WaitEvent(&event);
 			if (event.type == SDL_QUIT) {
 				break;
@@ -310,8 +375,14 @@ int main(int argc, char* argv[]) {
 				SDL_UpdateWindowSurface(window);
 			}		
 		}
-		
 	}
+
+	working = 0;
+
+	pthread_join(thread_state1.thread_id, NULL);
+	pthread_join(thread_state2.thread_id, NULL);
+	pthread_join(thread_state3.thread_id, NULL);
+	pthread_join(thread_state4.thread_id, NULL);
 
 	SDL_FreeSurface(screenSurface);
 	SDL_DestroyWindow(window);
